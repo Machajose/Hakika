@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.env.local
+artifacts/
+cache/
+deployment.localhost.json
+deployment.hardhat.json
+sample-certificate.pdf
+hardhat.sandbox.config.js
+.DS_Store

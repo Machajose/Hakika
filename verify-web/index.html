@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MUT Document Verification</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #ffffff; --text: #14202e; --muted: #5b6b7d; --line: #dde3ea;
+    --ok: #0b7a3b; --ok-bg: #e6f6ec; --warn: #9a5b00; --warn-bg: #fff3dc; --bad: #b3261e; --bad-bg: #fdeceb;
+    --brand: #123a6b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1620; --card:#18222f; --text:#e8eef5; --muted:#9fb0c3; --line:#2a3848;
+            --ok:#5fd18a; --ok-bg:#12301f; --warn:#f0b955; --warn-bg:#33270f; --bad:#ff8a80; --bad-bg:#3a1917; --brand:#7fb0f0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { text-align:center; padding: 12px 0 18px; }
+  header h1 { margin:0; font-size: 1.25rem; color: var(--brand); }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
+  .card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 18px; margin-top: 14px; }
+  .status { border-radius: 10px; padding: 16px; text-align:center; font-weight: 700; font-size: 1.15rem; }
+  .status small { display:block; font-weight: 400; font-size: .85rem; margin-top: 6px; }
+  .ok   { background: var(--ok-bg);   color: var(--ok); }
+  .warn { background: var(--warn-bg); color: var(--warn); }
+  .bad  { background: var(--bad-bg);  color: var(--bad); }
+  .neutral { background: var(--bg); color: var(--muted); border:1px dashed var(--line); }
+  dl { margin: 0; display:grid; grid-template-columns: 130px 1fr; gap: 8px 12px; }
+  dt { color: var(--muted); font-size: .85rem; }
+  dd { margin: 0; font-weight: 600; word-break: break-word; }
+  .notice { margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: .88rem; }
+  .small { font-size: .78rem; color: var(--muted); word-break: break-all; margin-top: 12px; }
+  textarea { width:100%; min-height: 84px; padding: 10px; border:1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; font-size:.85rem; }
+  button { font: inherit; padding: 10px 14px; border-radius: 8px; border:1px solid var(--brand); background: var(--brand); color:#fff; cursor:pointer; }
+  button.secondary { background: transparent; color: var(--brand); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top: 10px; }
+  a { color: var(--brand); }
+  footer { text-align:center; color: var(--muted); font-size: .78rem; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="inst">Document Verification</h1>
+    <p>Check that a document is genuine and unchanged</p>
+  </header>
+
+  <div id="result"></div>
+
+  <div class="card" id="pasteCard" hidden>
+    <strong>Paste the verification link</strong>
+    <p class="small" style="margin-top:4px">Normally you just scan the QR code on the document. If you only have the link text, paste it here.</p>
+    <textarea id="paste" placeholder="https://.../index.html#eyJ2Ijox..."></textarea>
+    <div class="row"><button id="pasteBtn">Verify</button></div>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="vendor/ethers.umd.min.js"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+  var CFG = window.MUTV_CONFIG;
+  var ABI = ["function verify(bytes32 docHash) view returns (bool exists, bool revoked, uint64 issuedAt, uint64 revokedAt, address issuer)"];
+  var ZERO = "0x0000000000000000000000000000000000000000";
+  var VERSION = "MUTV1"; // must match anchor-service/src/hash.js
+
+  var $ = function (id) { return document.getElementById(id); };
+  $("inst").textContent = CFG.INSTITUTION + " - Document Verification";
+  $("foot").textContent = "Records are checked directly on the " + CFG.NETWORK_LABEL + ". No personal data is stored on the blockchain.";
+
+  // ---------- the fingerprint recipe (same as the issuing service) ----------
+  function clean(v) { return String(v == null ? "" : v).trim().normalize("NFC"); }
+  function fingerprintOf(f) {
+    var parts = [VERSION, f.docId, f.docType, f.regNo, f.name, f.program, f.issuedOn, f.salt].map(clean);
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i] || parts[i].indexOf("|") !== -1) throw new Error("Invalid document data");
+    }
+    return ethers.keccak256(ethers.toUtf8Bytes(parts.join("|")));
+  }
+
+  function decodePayload(b64url) {
+    var b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var o = JSON.parse(new TextDecoder().decode(bytes));
+    if (o.v !== 1) throw new Error("Unsupported version");
+    return { docId: o.d, docType: o.t, regNo: o.r, name: o.n, program: o.p, issuedOn: o.i, salt: o.s };
+  }
+
+  // ---------- read the chain (tries each RPC in order) ----------
+  async function readChain(hash) {
+    var lastErr;
+    for (var i = 0; i < CFG.RPC_URLS.length; i++) {
+      try {
+        var provider = new ethers.JsonRpcProvider(CFG.RPC_URLS[i], CFG.CHAIN_ID, { staticNetwork: true });
+        var c = new ethers.Contract(CFG.CONTRACT_ADDRESS, ABI, provider);
+        var r = await c.verify(hash);
+        return { exists: r.exists, revoked: r.revoked, issuedAt: Number(r.issuedAt), revokedAt: Number(r.revokedAt), issuer: r.issuer };
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error("Could not reach the blockchain");
+  }
+
+  // ---------- drawing (textContent only: document data is never inserted as HTML) ----------
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  function fmt(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "-"; }
+
+  function showStatus(kind, title, sub) {
+    var s = el("div", "status " + kind, title);
+    if (sub) s.appendChild(el("small", null, sub));
+    return s;
+  }
+
+  function render(fields, hash, chainRes, opts) {
+    var root = $("result"); root.textContent = "";
+    var card = el("div", "card");
+    if (!chainRes) {
+      card.appendChild(showStatus("bad", "Could not check", "The blockchain could not be reached. Check your internet and try again."));
+    } else if (!chainRes.exists) {
+      card.appendChild(showStatus("bad", "NOT VERIFIED", "No matching record was found. This document may be forged, altered, or not issued by " + CFG.INSTITUTION + "."));
+    } else if (chainRes.revoked) {
+      card.appendChild(showStatus("warn", "REVOKED", "This document was issued but has since been cancelled by the issuer. Do not rely on it."));
+    } else {
+      card.appendChild(showStatus("ok", "GENUINE", "This document matches an official record issued by " + CFG.INSTITUTION + "."));
+    }
+
+    if (fields) {
+      var dl = el("dl"); dl.style.marginTop = "16px";
+      [["Name", fields.name], ["Reg. number", fields.regNo], ["Programme", fields.program], ["Document", fields.docType],
+       ["Issued on", fields.issuedOn], ["Document ID", fields.docId]].forEach(function (p) {
+        dl.appendChild(el("dt", null, p[0])); dl.appendChild(el("dd", null, p[1]));
+      });
+      card.appendChild(dl);
+      card.appendChild(el("div", "notice", "IMPORTANT: confirm that the details above match the document in your hand. A genuine QR code copied onto a different document would still show these details."));
+    }
+
+    if (chainRes && chainRes.exists) {
+      var d2 = el("dl"); d2.style.marginTop = "16px";
+      d2.appendChild(el("dt", null, "Recorded on-chain")); d2.appendChild(el("dd", null, fmt(chainRes.issuedAt)));
+      if (chainRes.revoked) { d2.appendChild(el("dt", null, "Revoked on")); d2.appendChild(el("dd", null, fmt(chainRes.revokedAt))); }
+      card.appendChild(d2);
+    }
+
+    if (hash) card.appendChild(el("div", "small", "Fingerprint: " + hash));
+    if (CFG.CONTRACT_ADDRESS !== ZERO) {
+      var p = el("div", "small"); p.appendChild(document.createTextNode("Contract: "));
+      var a = el("a", null, CFG.CONTRACT_ADDRESS); a.href = CFG.EXPLORER_BASE + "/address/" + CFG.CONTRACT_ADDRESS; a.target = "_blank"; a.rel = "noopener noreferrer";
+      p.appendChild(a); card.appendChild(p);
+    }
+
+    if (opts && opts.canTamper) {
+      var row = el("div", "row");
+      var b = el("button", "secondary", "Demo: change one letter and re-check");
+      b.onclick = function () { runDemoTamper(fields); };
+      row.appendChild(b); card.appendChild(row);
+    }
+    root.appendChild(card);
+  }
+
+  async function check(fields, opts) {
+    var root = $("result"); root.textContent = "";
+    var c = el("div", "card"); c.appendChild(showStatus("neutral", "Checking...")); root.appendChild(c);
+    var hash;
+    try { hash = fingerprintOf(fields); } catch (e) { return render(null, null, { exists: false }); }
+    if (CFG.CONTRACT_ADDRESS === ZERO) {
+      root.textContent = "";
+      var card = el("div", "card");
+      card.appendChild(showStatus("neutral", "Not connected", "This page has not been connected to a contract yet. Set CONTRACT_ADDRESS in config.js."));
+      card.appendChild(el("div", "small", "Fingerprint computed from this document: " + hash));
+      root.appendChild(card); return;
+    }
+    var res = null;
+    try { res = await readChain(hash); } catch (e) { res = null; }
+    render(fields, hash, res, opts);
+  }
+
+  function runDemoTamper(fields) {
+    var t = Object.assign({}, fields);
+    // change exactly one character of the name
+    t.name = t.name.length > 1 ? t.name.slice(0, -1) + (t.name.slice(-1) === "a" ? "o" : "a") : t.name + "x";
+    check(t, { canTamper: false });
+  }
+
+  function start() {
+    var h = location.hash.replace(/^#/, "");
+    if (!h) { $("result").appendChild(function () { var c = el("div", "card"); c.appendChild(showStatus("neutral", "Scan a document's QR code to begin")); return c; }()); $("pasteCard").hidden = false; return; }
+    try { check(decodePayload(h), { canTamper: true }); }
+    catch (e) { render(null, null, { exists: false }); $("pasteCard").hidden = false; }
+  }
+
+  $("pasteBtn").onclick = function () {
+    var v = $("paste").value.trim(); var i = v.indexOf("#");
+    if (i >= 0) location.hash = v.slice(i + 1); else location.hash = v;
+    location.reload();
+  };
+  window.addEventListener("hashchange", start);
+  start();
+})();
+</script>
+</body>
+</html>
