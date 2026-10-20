@@ -1,4 +1,4 @@
-# MUT-Verify (prototype)
+# HAKIKI(MUT-Verify (prototype)
 
 Give every official MUT document a tamper-proof fingerprint on the Avalanche blockchain, so anyone can scan a QR code and confirm the document is genuine, the same idea KNEC used for national certificates, scaled down for one university.
 
