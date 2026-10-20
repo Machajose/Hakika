@@ -61,9 +61,16 @@ npm run dev                   # service on http://localhost:8080
 ```
 Then in another terminal:
 ```bash
-curl -X POST localhost:8080/issue -H "content-type: application/json" \
-  -H "x-api-key: change-me-to-a-long-random-string" \
-  -d '{"docType":"CLEARANCE","regNo":"DEMO/0001/2021","name":"Jane Wanjiru","program":"BSc Medical Laboratory Sciences"}'
+$body = '{"docType":"CLEARANCE","regNo":"DEMO/0001/2021","name":"Jane Wanjiru","program":"BSc Medical Laboratory Sciences"}'
+
+$r = Invoke-RestMethod -Method Post -Uri http://localhost:8080/issue `
+  -ContentType "application/json" `
+  -Headers @{ "x-api-key" = "change-me-to-a-long-random-string" } `
+  -Body $body
+
+$r | Select-Object docHash, txHash, dryRun
+
+[IO.File]::WriteAllBytes("$PWD\certificate.pdf", [Convert]::FromBase64String($r.pdfBase64))
 ```
 The reply contains `pdfBase64` (the certificate) and the fingerprint. (In dry-run the blockchain is pretended.)
 
